@@ -1,0 +1,98 @@
+"$schema": "http://json-schema.org/draft-04/schema#"
+description: Schema for dataset types for vectors.
+type: object
+properties:
+    name:
+        type: string
+        # Alphanumeric, underscore or hyphen
+        pattern: '^[\w ]+$'
+    description:
+        type: string
+    metadata_type:
+        oneOf:
+            - type: string
+            - "$ref": "metadata-type-schema-vectors.yaml"
+    license:
+        title: Product license
+        description: Either a SPDX License identifier, 'various' or 'proprietary'
+        type: string
+        pattern: '^[\w\-.+]+$'
+    metadata:
+        type: object
+    #storage:
+    #    "$ref": "#/definitions/storage"
+    #load:
+    #    "$ref": "#/definitions/load"
+    attributes:
+        type: array
+        additionalProperties: false
+        description: fields and legend
+        # Each property is a measurement. Ensure they are alphanumeric+underscores.
+        items:
+            "$ref": "#/definitions/attributesItems"
+
+required:
+    - name
+    - description
+    - metadata_type
+    - metadata
+additionalProperties: false
+
+# Some people define default objects for reference elsewhere in the document.
+patternProperties:
+    'default_\w+':
+        type: object
+
+definitions:
+    dtype:
+        enum: ["char","string","float16", "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "complex64", "complex128"]
+    attributesItems:
+        type: object
+        properties:
+            name:
+                type: string
+                pattern: '^[\w.]+$'
+            extrapolation:
+                type: boolean
+                description: Possibility to extrapolate geom for missing date
+            field_id:
+                type: string
+                description: field containing the unique Id to recognize the geom
+            field_list:
+                type: array
+                description: list of the different fields
+                item: string
+            legend:
+                type: array
+                decription: list of legends to apply
+                item: 
+                    type: object
+                    properties:
+                        name:
+                           type: string
+                           description: name of the legend used as ref if multiple legends are provided
+                        legendType:
+                            type: string
+                            enum: [class,continuous,range,unique]
+                            description: type of legend. It could be class, continuous, range, unique
+                        fieldToApply:
+                            type: array
+                            description: list of field(s) to apply the colorscheme onto
+                            items:
+                                type: string
+                        legendItem:
+                            type: array
+                            description: legend to apply
+                            items:
+                                type: object
+                                # for unique type => {color:#hexcode}
+                                #for continuous type => {codeName: list of branca colormaps}
+                                #for class type => {value: float, name: str, color: #hexcode}
+                                #for range type => {valueMin: float, valueMax: float, name: str,color:#hexcode}
+        required:
+          - name
+          - field_id
+          - field_list
+          - legend
+        additionalProperties: false
+

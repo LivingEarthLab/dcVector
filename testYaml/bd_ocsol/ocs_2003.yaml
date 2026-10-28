@@ -1,0 +1,31 @@
+format: shp
+creation_dt: 2003-01-01
+sources: {}
+provider: "Le Grand Narbonne Communauté d'Agglomération"
+id: 022534ac-27dc-4b6b-bd95-0978c28e97fc
+extent:
+  coord:
+    ll:
+      lat: 672523.6080000032670796
+      lon: 6193185.6000000052154064
+    lr:
+      lat: 719527.8999999910593033
+      lon: 6193185.6000000052154064
+    ul:
+      lat: 672523.6080000032670796
+      lon: 6253793.3999999910593033
+    ur:
+      lat: 719527.8999999910593033
+      lon: 6253793.3999999910593033
+  center_dt: 2003-01-01
+projection:
+  epsg:
+    2154
+file:
+  fichier:
+      path:
+        /home/test/testData/ocs2003/OCSOL_GN_PNR_2003_hom.shp
+geom:
+  geom_type: Polygon
+  geom_field: geom
+temporality: Ponctual

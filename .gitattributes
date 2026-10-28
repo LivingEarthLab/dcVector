@@ -1,0 +1,3 @@
+# Exclude the test data from the release archives (GitHub source archives and Zenodo).
+# The folder stays available in the GitHub repository.
+testData/ export-ignore

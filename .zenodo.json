@@ -1,0 +1,26 @@
+{
+  "title": "dcVector: native vector data support for the Open Data Cube",
+  "upload_type": "software",
+  "version": "1.0.0",
+  "description": "<p>dcVector is a plugin extending the Open Data Cube (ODC) so that it can manage vector data natively, alongside raster data, in Cube-in-a-Box (CiaB) environments. It adds vector products and metadata types to the datacube index, a <code>load_vect</code> method returning GeoDataFrames, and tools to combine vector and raster time series (time-matched overlays, zonal statistics, interactive maps).</p><p>It was developed for datacube 1.9.14, as shipped with Cube-in-a-Box v1.0.0 (LivingEarthLab).</p>",
+  "creators": [
+    {
+      "name": "Chognard, Sébastien",
+      "affiliation": "University of Geneva",
+      "orcid": "0009-0009-3062-4029"
+    }
+  ],
+  "license": "Apache-2.0",
+  "access_right": "open",
+  "language": "eng",
+  "keywords": [
+    "Open Data Cube",
+    "datacube",
+    "vector data",
+    "Earth observation",
+    "GIS",
+    "land cover",
+    "Cube-in-a-Box"
+  ],
+  "notes": "All the developments have been made possible thanks to the financial support of the European Union's Horizon Europe Programme, which funded the LandShift project (Grant Agreement no. 101182007). The test data are not included in this archive; they are available in the GitHub repository under the ODbL v1.0 (see README)."
+}

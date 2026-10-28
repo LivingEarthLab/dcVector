@@ -1,0 +1,39 @@
+name: vectors
+description: Default template for vector format data
+dataset:
+    id: ['id']
+    creation_dt: ['creation_dt']
+    format: ['format']
+    sources: ['sources']
+    provider: ['provider']
+    extent: ['extent']
+    projection: ['projection']
+    temporality: ["temporality"]
+    attributes: ['file']
+    search_fields:
+        geom_type:
+            description: type of geometry
+            type: string
+            offset: ['geom','geom_type']
+        geom_field:
+            description: name of the field containing the geom
+            offset: ['geom','geom_field']
+            #oneOf:
+            #    - type: number
+            #    - enum: ['annual','monthly','weekly','daily','ponctual']
+        #field_id:
+        #    description: field used as id to potentially monitor a geom
+        #    #type: string
+        #    offset: ['field','field_id']
+        #field_list:
+        #    description: list of the fields within the data
+        #    offset: ['field','field_list']
+        time:
+            description: Acquisition time
+            type: datetime-range
+            min_offset:
+            - [extent, from_dt]
+            - [extent, center_dt]
+            max_offset:
+            - [extent, to_dt]
+            - [extent, center_dt]
