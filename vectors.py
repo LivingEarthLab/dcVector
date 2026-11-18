@@ -18,7 +18,7 @@ import json
 import warnings
 from typing import Union, List, Tuple, Dict, Any, Literal, Optional
 import shapely
-from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
+from shapely.geometry import Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, box
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 import numpy as np
@@ -154,7 +154,10 @@ class GeometryGenerator:
         """
         Create a geometry from an array of coordinates.
 
-        - 1D array (``[x, y]`` or ``[x, y, z]``): Point;
+        - 1D array of 2 or 3 values (``[x, y]`` or ``[x, y, z]``): Point;
+        - 1D array of 4 values (``[minX, minY, maxX, maxY]``): rectangle (Polygon);
+        - 1D array of 6 values (``[minX, minY, minZ, maxX, maxY, maxZ]``): rectangle
+          (Polygon) of the x/y bounds, the z bounds being ignored;
         - 2D array: Point (1 vertex), LineString (2 vertices or open line) or
           Polygon (3 vertices or more, first and last vertices equal);
         - 3D array: Polygon, the first ring being the exterior and the others holes.
@@ -165,8 +168,18 @@ class GeometryGenerator:
         coords = np.array(coordinates)
 
         # Single point [x, y] or [x, y, z]
-        if coords.ndim == 1 and len(coords) >= 2:
-            return Point(coords[:3])  # Keeps x, y and z if available
+        if coords.ndim == 1 and len(coords) in (2, 3):
+            return Point(coords)
+
+        # Bounding box [minX, minY, maxX, maxY] or [minX, minY, minZ, maxX, maxY, maxZ]
+        elif coords.ndim == 1 and len(coords) in (4, 6):
+            if len(coords) == 4:
+                min_x, min_y, max_x, max_y = coords
+            else:
+                min_x, min_y, _, max_x, max_y, _ = coords
+            if min_x >= max_x or min_y >= max_y:
+                raise ValueError(f"Invalid bounding box: min values must be lower than max values ({coords.tolist()})")
+            return box(min_x, min_y, max_x, max_y)
 
         # Several points or line
         elif coords.ndim == 2:
@@ -321,7 +334,12 @@ class Load:
       the raster data, ``spatialFilter`` (filter geometry, with its CRS in
       ``spatialFilter_crs``, EPSG:4326 by default) for the vector data;
     - ``ids`` (list, optional): identifiers of the vector features to load;
-    - ``fields`` (list of str, optional): vector attributes to load.
+    - ``fields`` (list of str, optional): vector attributes to load;
+    - ``measurements`` (list of str, optional): raster measurements to load
+      (all by default);
+    - ``dask_chunks`` (dict, optional): load the raster lazily with dask, e.g.
+      ``{'x': 2048, 'y': 2048}``. Recommended for large rasters: each date is
+      then only read when it is used.
 
     The query is checked against a JSON schema; an invalid query raises a warning
     but is still sent to the datacube.
@@ -354,6 +372,8 @@ class Load:
             "crs": {"type": "string"},
             "output_crs": {"type": "string"},
             "resolution": {"type": "number"},
+            "measurements": {"type": "array", "items": {"type": "string"}},
+            "dask_chunks": {"type": "object"},
             "product": {
               "oneOf": [
                 {"type": "string"},
@@ -645,7 +665,7 @@ class Load:
         self.query_for_vect = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'spatialFilter','spatialFilter_crs',"ids","fields"]}
         self.dc=datacube.Datacube(app='Load class')
         self.productVector=self._get_product(self.query,"vector")
-        self.query_for_raster = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'crs',"resolution","x","y","geopolygon"]}
+        self.query_for_raster = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'crs',"resolution","x","y","geopolygon","measurements","dask_chunks"]}
         self.productRaster=self._get_product(self.query,"raster")
         self.data_vector=self.dc.load_vect(product=self.productVector,**self.query_for_vect) if self.productVector else None
         self.data_raster=self.dc.load(product=self.productRaster,**self.query_for_raster) if self.productRaster else None
@@ -994,92 +1014,101 @@ class Load:
             geopandas.GeoDataFrame: the features of the vector date with one column per
             statistic and a ``date_raster_stat`` column.
         """
+        subset = raster_vect_copy[raster_vect_copy['time'] == time_vector_val].copy()
         transform = self._getAffine(self.data_raster)
-
-        # Zonal statistics
+        raster_data = self.data_raster[raster_variable].sel(time=time_raster_val).values
+        # Zonal statistics, returned in the order of the features
         stats_res = zonal_stats(
-            self.data_vector[self.data_vector['time']==time_vector_val].geometry,
-            self.data_raster[raster_variable].sel(time=time_raster_val).values,
+            subset.geometry,
+            raster_data,
             affine=transform,
             stats=stats_to_implement,
             nodata=self.nodata_value,
-            geojson_out=True,
             all_touched=True
         )
-        for stat in stats_res:
-            for key, value in stat['properties'].items():
-                if key not in raster_vect_copy.columns:
-                    raster_vect_copy[key] = np.nan
-                mask = (raster_vect_copy['time'] == time_vector_val) & (raster_vect_copy.index == int(stat['id']))
-                raster_vect_copy.loc[mask, key] = value
-                raster_vect_copy.loc[mask, 'date_raster_stat'] = time_raster_val
-                #data_vect[data_vect['id']==float(stat['id'])][key]=value
-        return raster_vect_copy[raster_vect_copy['time'] == time_vector_val]
+        del raster_data
+        # Results assigned in one step, by position (robust to a non-unique index)
+        stats_df = pd.DataFrame(stats_res)
+        subset = subset.assign(**{col: stats_df[col].to_numpy() for col in stats_df.columns})
+        subset['date_raster_stat'] = pd.Timestamp(time_raster_val)
+        return subset
+
+    # Statistics of the pixels of a single class, derived from their count:
+    # all the pixels have the value of the class.
+    _CLASS_STATS_FROM_VALUE = ('mean', 'min', 'max', 'median', 'majority', 'minority')
+    _CLASS_STATS_ZERO = ('std', 'range')
 
     def _raster_stat_by_class(self, raster_vect_copy, raster_variable, time_raster_val, time_vector_val, stats_to_implement):
         """
         Compute zonal statistics separately for each raster class.
 
-        For each class value of the raster, the pixels of the other classes are masked
-        and the statistics are stored in columns named ``<stat>_class_<value>``.
+        The number of pixels of each class in each feature is computed in a single
+        pass with the ``categorical`` mode of rasterstats. The other statistics are
+        derived from it, since all the pixels of a class have the same value:
+        ``sum`` = count × class value; ``mean``, ``min``, ``max``, ``median``,
+        ``majority``, ``minority`` = class value; ``std``, ``range`` = 0; ``unique`` = 1.
+        They are NaN for a feature without pixels of the class. The columns are
+        named ``<stat>_class_<value>``, one per class found in the raster date.
 
         Returns:
             geopandas.GeoDataFrame: the features of the vector date with the
             statistics of each class.
+
+        Raises:
+            ValueError: if a statistic cannot be computed by class.
         """
+        supported = ('count', 'sum', 'unique') + self._CLASS_STATS_FROM_VALUE + self._CLASS_STATS_ZERO
+        unsupported = [s for s in stats_to_implement if s not in supported]
+        if unsupported:
+            raise ValueError(f"Statistics not available with by_class=True: {unsupported}. Available: {list(supported)}")
+
+        subset = raster_vect_copy[raster_vect_copy['time'] == time_vector_val].copy()
         transform = self._getAffine(self.data_raster)
         raster_data = self.data_raster[raster_variable].sel(time=time_raster_val).values
 
-        # Unique classes of the raster (excluding nodata)
-        unique_classes = np.unique(raster_data[raster_data != self.nodata_value])
+        # Unique classes of the raster (excluding nodata). For non-negative integer
+        # rasters (e.g. uint8 land cover maps), bincount avoids copying and sorting the array.
+        if np.issubdtype(raster_data.dtype, np.integer) and raster_data.size and raster_data.min() >= 0:
+            unique_classes = np.nonzero(np.bincount(raster_data.ravel()))[0].astype(raster_data.dtype)
+            unique_classes = unique_classes[unique_classes != self.nodata_value]
+        else:
+            unique_classes = np.unique(raster_data[raster_data != self.nodata_value])
 
-        all_class_results = []
+        # Number of pixels of each class in each feature, in a single pass
+        categories = zonal_stats(
+            subset.geometry,
+            raster_data,
+            affine=transform,
+            categorical=True,
+            nodata=self.nodata_value,
+            all_touched=True
+        )
+        del raster_data
+        counts = pd.DataFrame(categories)
+        counts.columns = [c.item() if hasattr(c, 'item') else c for c in counts.columns]
 
+        new_columns = {}
         for cls in unique_classes:
-            # Mask the raster to keep only the pixels of the current class
-            raster_masked = np.where(raster_data == cls, raster_data, self.nodata_value)
+            cls_value = cls.item()
+            n = counts[cls_value].fillna(0).to_numpy(dtype=float) if cls_value in counts.columns else np.zeros(len(subset))
+            present = n > 0
+            for stat in stats_to_implement:
+                if stat == 'count':
+                    values = n
+                elif stat == 'sum':
+                    values = np.where(present, n * cls_value, np.nan)
+                elif stat == 'unique':
+                    values = np.where(present, 1.0, np.nan)
+                elif stat in self._CLASS_STATS_FROM_VALUE:
+                    values = np.where(present, float(cls_value), np.nan)
+                else:
+                    values = np.where(present, 0.0, np.nan)
+                new_columns[f"{stat}_class_{cls}"] = values
 
-            stats_res = zonal_stats(
-                self.data_vector[self.data_vector['time'] == time_vector_val].geometry,
-                raster_masked,
-                affine=transform,
-                stats=stats_to_implement,
-                nodata=self.nodata_value,
-                geojson_out=True,
-                all_touched=True
-            )
-
-            # Temporary copy for this class
-            raster_vect_class = raster_vect_copy.copy()
-            raster_vect_class['class'] = cls
-
-            for stat in stats_res:
-                for key, value in stat['properties'].items():
-                    col_name = f"{key}_class_{cls}"
-                    if col_name not in raster_vect_class.columns:
-                        raster_vect_class[col_name] = np.nan
-                    mask = (raster_vect_class['time'] == time_vector_val) & (raster_vect_class.index == int(stat['id']))
-                    raster_vect_class.loc[mask, col_name] = value
-                    raster_vect_class.loc[mask, 'date_raster_stat'] = time_raster_val
-
-            all_class_results.append(raster_vect_class[raster_vect_class['time'] == time_vector_val])
-
-        if not all_class_results:
-            return raster_vect_copy[raster_vect_copy['time'] == time_vector_val]
-
-        # Merge the results of all classes into a single GeoDataFrame
-        result = all_class_results[0]
-        for df in all_class_results[1:]:
-            class_cols = [c for c in df.columns if c.startswith(tuple(f"{s}_class_" for s in stats_to_implement))] + ['class']
-            result = result.merge(
-                df[['time', 'class'] + [c for c in df.columns if '_class_' in c]].drop(columns=['class']),
-                left_index=True, right_index=True,
-                suffixes=('', '_dup')
-            )
-            # Drop the duplicated columns created by the merge
-            result = result[[c for c in result.columns if not c.endswith('_dup')]]
-
-        return result
+        # Results assigned in one step, by position (robust to a non-unique index)
+        subset = subset.assign(**new_columns)
+        subset['date_raster_stat'] = pd.Timestamp(time_raster_val)
+        return subset
 
     def dc_zonal_stat(self,
                       raster_variable,
@@ -1101,7 +1130,10 @@ class Load:
                 (e.g. ``mean``, ``std``, ``min``, ``max``, ``count``, ``sum``).
             extrapolation (bool, optional): use the latest earlier vector date whatever
                 the period. Defaults to the ``extrapolation`` value of the product metadata.
-            by_class (bool): compute the statistics separately for each raster class.
+            by_class (bool): compute the statistics separately for each raster class
+                (see ``_raster_stat_by_class``). Available statistics: ``count``,
+                ``sum``, ``mean``, ``min``, ``max``, ``median``, ``majority``,
+                ``minority``, ``std``, ``range``, ``unique``.
 
         Returns:
             pandas.DataFrame: the vector features with the statistics and the raster
@@ -1127,7 +1159,7 @@ class Load:
             list(ds.product.lookup_attributes().keys())[0]).get('extrapolation', False)
         dates_to_run = self._create_time_extrapolation(time_val_raster, time_val_vect, time_range, extrapolation_value)
         data_vector_stat = self.data_vector.copy()
-        data_vector_stat['date_raster_stat'] = np.nan
+        data_vector_stat['date_raster_stat'] = pd.NaT
         results = []
         for i in dates_to_run.index:
             vector_date = dates_to_run.iloc[i]["vector"]

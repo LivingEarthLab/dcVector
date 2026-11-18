@@ -8,7 +8,7 @@
 # vectUpdate.sh — installs the dcVector plugin into a datacube (ODC) package.
 #
 # Usage:
-#   ./vectUpdate.sh                      # detects datacube with $PYTHON (default: python)
+#   ./vectUpdate.sh                      # detects the interpreter and datacube (python, python3, /opt/venv/bin/python)
 #   ./vectUpdate.sh /path/to/datacube
 #   PYTHON=/opt/conda/bin/python ./vectUpdate.sh
 #   EXPECTED=1.9 ./vectUpdate.sh         # expected datacube version (prefix accepted)
@@ -22,22 +22,46 @@ set -o pipefail
 cd "$(dirname "$0")"
 
 # ----------- Parameters -----------
-PYTHON="${PYTHON:-python}"
 # datacube version the patched files were written for
 # (Cube-in-a-Box v1.0.0, https://github.com/LivingEarthLab/cube-in-a-box → datacube 1.9.14).
 # A value of "1.9" accepts any 1.9.x; "1.9.14" accepts only that version.
 EXPECTED="${EXPECTED:-1.9.14}"
 FORCE="${FORCE:-0}"
 
-# ----------- Detection of datacube with $PYTHON -----------
-detectedDc=$("$PYTHON" -c "import datacube, os; print(os.path.dirname(datacube.__file__))" 2>/dev/null) || detectedDc=""
+# Location of the datacube package seen by an interpreter. find_spec() locates the
+# package without importing it, so this also works when a previous installation of
+# the plugin left datacube in a state where it cannot be imported.
+find_datacube() {
+  "$1" -c "import importlib.util, os; s = importlib.util.find_spec('datacube'); print(os.path.dirname(s.origin)) if s and s.origin else exit(1)" 2>/dev/null
+}
+
+# ----------- Detection of the interpreter and of datacube -----------
+# Without PYTHON=, try the usual interpreters and keep the first one that sees datacube.
+if [ -z "$PYTHON" ]; then
+  for candidate in python python3 /opt/venv/bin/python; do
+    if command -v "$candidate" >/dev/null 2>&1 && find_datacube "$candidate" >/dev/null; then
+      PYTHON="$candidate"
+      break
+    fi
+  done
+  PYTHON="${PYTHON:-python3}"
+fi
+
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+  echo "Error: the Python interpreter '$PYTHON' was not found."
+  echo "Give it with PYTHON=<interpreter>, e.g. PYTHON=/opt/venv/bin/python $0"
+  exit 1
+fi
+
+detectedDc=$(find_datacube "$PYTHON") || detectedDc=""
 
 if [ -n "$1" ]; then
   pathDc="${1%/}"
 else
   if [ -z "$detectedDc" ]; then
-    echo "Error: cannot import datacube with '$PYTHON'."
-    echo "Activate the right environment or give the path: $0 <path_to_datacube>"
+    echo "Error: no datacube package found with '$PYTHON' ($(command -v "$PYTHON"))."
+    echo "Give the interpreter of the datacube environment with PYTHON=<interpreter>,"
+    echo "or the path of the package: $0 <path_to_datacube>"
     exit 1
   fi
   pathDc="$detectedDc"
@@ -63,8 +87,15 @@ if [ -n "$1" ]; then
 fi
 
 # ----------- Version check -----------
-# Version read from the target package (not necessarily the one of $PYTHON if $1 is given).
-dcVersion=$(PYTHONPATH="$(dirname "$pathDc")" "$PYTHON" -c "import datacube; print(datacube.__version__)" 2>/dev/null) || dcVersion="unknown"
+# Version read from the package metadata of the target folder, without importing datacube.
+dcVersion=$("$PYTHON" -c "
+import importlib.metadata as m, sys
+for d in m.distributions(path=[sys.argv[1]]):
+    if (d.metadata['Name'] or '').lower() == 'datacube':
+        print(d.version); break
+else:
+    sys.exit(1)
+" "$(dirname "$pathDc")" 2>/dev/null) || dcVersion="unknown"
 
 echo "Python   : $(command -v "$PYTHON")"
 echo "datacube : $dcVersion → $pathDc"
