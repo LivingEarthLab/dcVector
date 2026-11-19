@@ -333,13 +333,26 @@ class Load:
     - spatial extent (optional): ``x`` and ``y`` (ranges) or ``geopolygon`` for
       the raster data, ``spatialFilter`` (filter geometry, with its CRS in
       ``spatialFilter_crs``, EPSG:4326 by default) for the vector data;
-    - ``ids`` (list, optional): identifiers of the vector features to load;
+    - ``ids`` (list, optional): identifiers of the vector features to load,
+      in the identifier field of the product. Either a list of identifiers
+      that are stable over time (``['31248', '31555']``), or ``[id, date]``
+      pairs when identifiers change between dates
+      (``[['31248', '2021-01-01'], ['31555', '2024-01-01']]``), possibly
+      grouped by date (``[[['31248', '31555'], '2021-01-01']]``). Dates are
+      matched to the dataset dates at day precision, and identifiers must
+      have the same type as in the files;
     - ``fields`` (list of str, optional): vector attributes to load;
     - ``measurements`` (list of str, optional): raster measurements to load
       (all by default);
     - ``dask_chunks`` (dict, optional): load the raster lazily with dask, e.g.
       ``{'x': 2048, 'y': 2048}``. Recommended for large rasters: each date is
-      then only read when it is used.
+      then only read when it is used;
+    - ``n_jobs`` (int, optional): number of parallel workers used to read the
+      vector files (4 by default);
+    - ``chunk_size`` (int, optional): number of features read at once from a
+      vector file (500 by default);
+    - ``batch_size`` (int, optional): number of vector files processed per
+      batch (10 by default).
 
     The query is checked against a JSON schema; an invalid query raises a warning
     but is still sent to the datacube.
@@ -374,6 +387,9 @@ class Load:
             "resolution": {"type": "number"},
             "measurements": {"type": "array", "items": {"type": "string"}},
             "dask_chunks": {"type": "object"},
+            "n_jobs": {"type": "integer"},
+            "chunk_size": {"type": "integer", "minimum": 1},
+            "batch_size": {"type": "integer", "minimum": 1},
             "product": {
               "oneOf": [
                 {"type": "string"},
@@ -662,7 +678,7 @@ class Load:
         except jsonschema.exceptions.ValidationError as e:
             warnings.warn(f"The query is invalid: {e.message}")
         self.query=query
-        self.query_for_vect = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'spatialFilter','spatialFilter_crs',"ids","fields"]}
+        self.query_for_vect = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'spatialFilter','spatialFilter_crs',"ids","fields","n_jobs","chunk_size","batch_size"]}
         self.dc=datacube.Datacube(app='Load class')
         self.productVector=self._get_product(self.query,"vector")
         self.query_for_raster = {k: v for k, v in self.query.items() if k in ['time', 'output_crs', 'crs',"resolution","x","y","geopolygon","measurements","dask_chunks"]}

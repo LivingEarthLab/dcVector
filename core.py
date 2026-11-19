@@ -32,7 +32,8 @@ from xarray.core.coordinates import DataArrayCoordinates
 
 ####for vectors###
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry import shape  
+from shapely.geometry import shape, mapping as shapely_mapping
+from shapely.prepared import prep as shapely_prep
 import fiona
 import pandas as pd
 import geopandas as gpd
@@ -73,11 +74,16 @@ def _stream_file_to_records(
         fields: List[str],
         id_field: Optional[str] = None,
         ids_set: Optional[Set] = None,
-        chunk_size: int = 500
+        chunk_size: int = 500,
+        geom_filter: Optional[BaseGeometry] = None
     ) -> Optional[gpd.GeoDataFrame]:
     """
     Stream a single vector file using Fiona — never loads full file in RAM.
     Yields chunks, filters on-the-fly, then concatenates only matching records.
+
+    If ``geom_filter`` is given (a Shapely geometry in the CRS of the file), only
+    the features intersecting it are kept: the file is read through the OGR
+    spatial filter (bounding-box test), then each candidate is tested exactly.
     """
     chunks = []
 
@@ -104,8 +110,17 @@ def _stream_file_to_records(
                 ids_with_time = False
                 ids_time_set = None
 
+            # Spatial filter: OGR only returns the features whose bounding box
+            # intersects the filter, the exact test is done below with Shapely
+            if geom_filter is not None:
+                features = src.filter(mask=shapely_mapping(geom_filter))
+                prepared_filter = shapely_prep(geom_filter)
+            else:
+                features = src
+                prepared_filter = None
+
             #work on record by record instead of loading the full file to save RAM
-            for feat_idx, feature in enumerate(src):
+            for feat_idx, feature in enumerate(features):
                 props = feature["properties"]
                 geom = feature["geometry"]
                 match=False
@@ -127,11 +142,15 @@ def _stream_file_to_records(
                             if props.get(id_field) not in ids_set:
                                 continue
 
+                geom_shape = shape(geom) if geom else None
+                if prepared_filter is not None and (geom_shape is None or not prepared_filter.intersects(geom_shape)):
+                    continue
+
                 row = {col: props.get(col) for col in cols_to_keep}
                 #if use_index_filter:
                 #    row[id_field] = feature.id
                 buffer_records.append(row)
-                buffer_geoms.append(shape(geom) if geom else None)
+                buffer_geoms.append(geom_shape)
                 buffer_ids.append(feat_idx)
 
                 # Flush chunk to avoid RAM accumulation
@@ -795,7 +814,8 @@ class Datacube:
         ids_set: Optional[Set] = None,
         n_jobs: int = 4,
         chunk_size: int = 500,
-        batch_size: int = 5
+        batch_size: int = 5,
+        geom_filter: Optional[BaseGeometry] = None
     ) -> gpd.GeoDataFrame:
         """
         Load multiple large vector files efficiently:
@@ -818,6 +838,7 @@ class Datacube:
                     id_field=id_field,
                     ids_set=ids_set,
                     chunk_size=chunk_size,
+                    geom_filter=geom_filter,
                 )
                 for tv, fp in batch
             )
@@ -975,15 +996,22 @@ class Datacube:
             for i, time_val in enumerate(time_values):
                 #data_by_time[pd.Timestamp(time_val)] = datasets[i]
                 with fiona.open(datasets[i].filePath) as f:
+                    # Spatial filter: OGR bounding-box test, then exact test with Shapely
+                    if geom_filter is not None:
+                        prepared_filter = shapely_prep(geom_filter)
+                        features = [feature for feature in f.filter(mask=shapely_mapping(geom_filter))
+                                    if feature['geometry'] and prepared_filter.intersects(shape(feature['geometry']))]
+                    else:
+                        features = f
                     if ids:
                         properties_list=numpy.array([
                             tuple(list(feature['properties'].get(key) for key in fields) + [shape(feature['geometry'])])
-                            for feature in f if feature['properties'].get(id_field) in ids
+                            for feature in features if feature['properties'].get(id_field) in ids
                         ],dtype=dtypesWithGeom)
                     else:
                         properties_list=numpy.array([
                             tuple(list(feature['properties'].get(key) for key in fields) + [shape(feature['geometry'])])
-                            for feature in f
+                            for feature in features
                         ],dtype=dtypesWithGeom)
                 data.append(properties_list)
             combined_array=numpy.stack(data,axis=0)
@@ -1032,8 +1060,15 @@ class Datacube:
                 ids_set=ids_set,
                 n_jobs=n_jobs,        # Parallel workers (tune to CPU cores)
                 chunk_size=chunk_size, # Features per chunk (tune to RAM budget)
-                batch_size=batch_size    # Files per batch (tune for >10 files)
+                batch_size=batch_size,    # Files per batch (tune for >10 files)
+                geom_filter=geom_filter  # Features intersecting the spatial filter only
             )
+            # Reprojection to the output CRS, if requested
+            if output_crs is not None and not results.empty and results.crs is not None:
+                target_crs = pyproj.CRS.from_user_input(output_crs)
+                if not results.crs.equals(target_crs):
+                    results = results.to_crs(target_crs)
+                gdpf_attributes['crs'] = target_crs
             results.attrs=gdpf_attributes
             return results
     ### end function vectors###
