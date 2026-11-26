@@ -42,11 +42,7 @@ The script moves to its own directory before running, so it can be launched from
 
 ### Choosing the target environment
 
-By default, the script locates the datacube package automatically with the `python` found in the current environment:
-
-```bash
-python -c "import datacube, os; print(os.path.dirname(datacube.__file__))"
-```
+By default, the script tries `python`, `python3` and `/opt/venv/bin/python`, and uses the first interpreter that sees a datacube package. The package is located without being imported (`importlib.util.find_spec`), and its version is read from the package metadata, so the script also works when a previous installation left datacube in a state where it cannot be imported.
 
 The following options are available:
 
@@ -140,6 +136,21 @@ http://localhost/jupyter/user/<userName>/lab
 
 This notebook demonstrates the integration of vector data processing within the DataCube environment.
 
+### Main query options
+
+Raster and vector data are loaded together with `datacube.vectors.Load(query)`. Besides `time`, `product` (`{'raster': ..., 'vector': ...}`), `crs`, `output_crs` and `resolution`, the query accepts:
+
+| Key | Effect |
+|---|---|
+| `spatialFilter`, `spatialFilter_crs` | Keeps only the vector features intersecting the geometry (GeoJSON, WKT, Shapely geometry or bounding box `[minX, minY, maxX, maxY]`; EPSG:4326 by default). Features crossing the boundary are kept whole. The raster extent is set with `x`/`y` or `geopolygon` |
+| `ids` | Selects vector features by identifier: a list of stable identifiers, or `[id, date]` pairs (or `[[id1, id2], date]` groups) when identifiers change between dates |
+| `fields` | Vector attributes to load |
+| `measurements` | Raster measurements to load (all by default) |
+| `dask_chunks` | Loads the raster lazily with dask (e.g. `{'x': 2048, 'y': 2048}`), recommended for large rasters |
+| `n_jobs`, `chunk_size`, `batch_size` | Parallel reading of the vector files (workers, features read at once, files per batch) |
+
+The vector data are reprojected to `output_crs`. The matplotlib plots (`raster_subplot`, `raster_vector_subplot`) decimate the raster for display (`max_size`, 2000 pixels by default) by keeping one pixel per block, which keeps valid class values for thematic maps; the statistics (`dc_zonal_stat`) always use the full resolution.
+
 ### Documentation
 
 Refer to the individual script documentation for detailed usage instructions and API references.
@@ -205,6 +216,11 @@ If you use dcVector, please cite the Zenodo release and the associated technical
 
 ## Version History
 
+- **v1.0.1**: Bug fixes and memory improvements
+  - Vector loading: `spatialFilter` is now applied to the features, and the vector data are reprojected to `output_crs` (both were ignored); `n_jobs`, `chunk_size` and `batch_size` are forwarded by `Load`; a list of 4 numbers is read as a bounding box
+  - Zonal statistics (`dc_zonal_stat`): fixed the date column with pandas ≥ 3; class counts computed in a single pass with `by_class=True`; results assigned in one step (lower memory use, much faster)
+  - Raster loading and plots: new `measurements` and `dask_chunks` query keys; raster plots decimated for display (`max_size`) and drawn one date at a time
+  - Installation script: datacube located without being imported, several interpreters tried
 - **v1.0.0**: First public release
 - **v1.0** (28/07/25): Initial internal version with core vector handling functionality
 

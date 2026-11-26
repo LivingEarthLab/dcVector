@@ -13,6 +13,6 @@ Main modules:
 from .forJupyter import Legend, TemporalMapViewer
 from .vectors import create_shape_geometry, Load, create_linear_cmap
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 __author__ = "Chognard Sebastien sebastien.chognard[at]unige.ch"
 __all__ = ["Legend", "TemporalMapViewer", "create_shape_geometry", "Load","create_linear_cmap"]
