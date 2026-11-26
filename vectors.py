@@ -792,16 +792,68 @@ class Load:
         """
         return int(time_step/column_number)+1 if time_step%column_number > 0 else int(time_step/column_number)
 
-    def _plot_raster_subset(self, ax, data_masked, val, colorscheme):
+    def _prepare_raster_for_display(self, data_raster_temp, name_dataset, max_size):
         """
-        Plot the raster slice of a given date with matplotlib, using the global min/max as colour range.
+        Prepare a raster measurement for display: decimation, nodata masking and colour range.
+
+        A screen cannot show more than a few thousand pixels per plot, so the raster
+        is decimated until its largest side is at most ``max_size`` pixels: one pixel
+        is kept every ``step`` pixels, i.e. the upper-left pixel of each block of
+        ``step`` x ``step`` pixels. The masking is done on the decimated data, in float32.
+        With dask (``dask_chunks`` in the query), nothing is loaded at this stage.
+
+        This decimation is used for memory reasons: masking and plotting the full
+        resolution converts the whole raster to floats and can exceed the available
+        memory for large rasters (e.g. 41932 x 30442 pixels per date). Keeping the
+        upper-left pixel of each block is the nearest-neighbour decimation normally
+        used for overviews of thematic rasters (default "nearest" resampling of GDAL
+        overviews): every displayed value is an actual pixel value, hence a valid
+        class of the legend, unlike averaging or bilinear interpolation, which create
+        values that belong to no class. Small or narrow objects (smaller than a block)
+        may be missed or shown fragmented; this only affects the display, the
+        statistics (e.g. ``dc_zonal_stat``) always use the full resolution.
+
+        Args:
+            data_raster_temp (xarray.Dataset): raster data.
+            name_dataset (str): name of the measurement.
+            max_size (int or None): maximum number of pixels of the largest side.
+                ``None`` keeps the full resolution.
+
+        Returns:
+            tuple: ``(data_masked, vmin, vmax)``, the decimated and masked
+            DataArray and the global colour range, computed once for all dates
+            (NaN if the raster only holds nodata values).
         """
-        data_masked.sel(time=val).plot(
+        data = data_raster_temp[name_dataset]
+        spatial_dims = [d for d in data.dims if d != 'time']  # (y, x) or (latitude, longitude)
+        # Decimation for memory reasons: keep the upper-left pixel of each block
+        # (nearest neighbour, the usual method for thematic rasters, see docstring)
+        step = 1
+        if max_size:
+            step = max(1, int(np.ceil(max(data.sizes[d] for d in spatial_dims) / max_size)))
+        if step > 1:
+            data = data.isel({d: slice(None, None, step) for d in spatial_dims})
+        data_masked = data.where(data != self.nodata_value).astype('float32')
+        vmin = float(data_masked.min())
+        vmax = float(data_masked.max())
+        return data_masked, vmin, vmax
+
+    def _plot_raster_subset(self, ax, data_masked, val, colorscheme, vmin, vmax):
+        """
+        Plot the raster slice of a given date with matplotlib (imshow), using the global colour range.
+
+        Only the slice of this date is loaded in memory. ``interpolation='nearest'``
+        avoids the default smoothing of imshow, which blends the colours of
+        neighbouring pixels on screen and would create colours belonging to no
+        class of a thematic map.
+        """
+        data_masked.sel(time=val).load().plot.imshow(
             ax=ax,
-            vmin=data_masked.min(),
-            vmax=data_masked.max(),
+            vmin=vmin,
+            vmax=vmax,
             cmap=colorscheme,
-            add_colorbar=False
+            add_colorbar=False,
+            interpolation='nearest'
         )
 
     def _build_overlay_title(self, dates_to_run, i, val, ax, data_vect_temp, field, ltype, colorSchemePlt):
@@ -868,7 +920,7 @@ class Load:
             return ax,fig
 
 
-    def raster_subplot(self, name_dataset, colorscheme='viridis', cut_to_vector_extent=False, column_number=3):
+    def raster_subplot(self, name_dataset, colorscheme='viridis', cut_to_vector_extent=False, column_number=3, max_size=2000):
         """
         Plot the raster time series with matplotlib, one subplot per date.
 
@@ -880,6 +932,9 @@ class Load:
                 ``"viridis"`` is used if it is not valid.
             cut_to_vector_extent (bool): clip the raster to the extent of the vector data.
             column_number (int): number of subplot columns.
+            max_size (int or None): maximum number of pixels of the largest side of
+                each plot; the raster is decimated for display above this size.
+                ``None`` plots the full resolution (memory intensive for large rasters).
 
         Returns:
             tuple: ``(axes, fig)``, where ``axes`` is a 2D array of axes (or a single
@@ -894,7 +949,7 @@ class Load:
         time_step = len(data_raster_temp.time.values)
         row_number = self._compute_row_number(time_step, column_number)
         colorscheme = self._validate_colorscheme(colorscheme)
-        data_masked = data_raster_temp[name_dataset].where(data_raster_temp[name_dataset] != self.nodata_value)
+        data_masked, vmin, vmax = self._prepare_raster_for_display(data_raster_temp, name_dataset, max_size)
 
         if time_step > 1:
             fig, axes = plt.subplots(nrows=row_number, ncols=column_number, sharex=True)
@@ -903,19 +958,19 @@ class Load:
                 axis.axis('off')
             for i, val in enumerate(data_raster_temp.time.values):
                 current_ax = ax2d[i // column_number, i % column_number]
-                self._plot_raster_subset(current_ax, data_masked, val, colorscheme)
+                self._plot_raster_subset(current_ax, data_masked, val, colorscheme, vmin, vmax)
                 current_ax.set_title(pd.to_datetime(str(val)).strftime('%Y-%m-%d'))
             return ax2d, fig
         else:
             fig, ax = plt.subplots()
             ax.axis('off')
-            self._plot_raster_subset(ax, data_masked, data_raster_temp.time.values[0], colorscheme)
+            self._plot_raster_subset(ax, data_masked, data_raster_temp.time.values[0], colorscheme, vmin, vmax)
             ax.set_title(pd.to_datetime(str(data_raster_temp.time.values[0])).strftime('%Y-%m-%d'))
             return ax, fig
         
     def raster_vector_subplot(self, legend_name, name_dataset, colorscheme='viridis',
                                cut_to_vector_extent=False, extrapolation=None,
-                               time_range='D', column_number=3):
+                               time_range='D', column_number=3, max_size=2000):
         """
         Plot each raster date with the matching vector data overlaid (matplotlib).
 
@@ -933,6 +988,9 @@ class Load:
             time_range (str): period used to match the dates: ``"Y"``, ``"M"``,
                 ``"D"``, ``"h"``, ``"m"`` or ``"s"``.
             column_number (int): number of subplot columns.
+            max_size (int or None): maximum number of pixels of the largest side of
+                each plot; the raster is decimated for display above this size.
+                ``None`` plots the full resolution (memory intensive for large rasters).
 
         Returns:
             tuple: ``(axes, fig)``.
@@ -958,8 +1016,8 @@ class Load:
         colorSchemePlt = self.default_legend.get_colorscheme_for_plt(name=legend_name)
         ltype = self.default_legend.get_type(legend_name)
         field = self.default_legend.get_colorscheme_field(legend_name)[0]
-        data_masked = data_raster_temp[name_dataset].where(data_raster_temp[name_dataset] != self.nodata_value)
-        if np.isnan(data_masked).all():
+        data_masked, vmin, vmax = self._prepare_raster_for_display(data_raster_temp, name_dataset, max_size)
+        if np.isnan(vmin):
             raise ValueError("raster only composed of no data values")
 
         time_step = len(dates_to_run['raster'])
@@ -972,7 +1030,7 @@ class Load:
                 axis.axis('off')
             for i, val in enumerate(dates_to_run['raster']):
                 current_ax = ax2d[i // column_number, i % column_number]
-                self._plot_raster_subset(current_ax, data_masked, val, colorscheme)
+                self._plot_raster_subset(current_ax, data_masked, val, colorscheme, vmin, vmax)
                 current_ax.set_aspect('auto')
                 title_text = self._build_overlay_title(dates_to_run, i, val, current_ax, data_vect_temp, field, ltype, colorSchemePlt)
                 current_ax.set_aspect('auto')
@@ -981,7 +1039,7 @@ class Load:
         else:
             fig, ax = plt.subplots()
             ax.axis('off')
-            self._plot_raster_subset(ax, data_masked, dates_to_run['raster'].iloc[0], colorscheme)
+            self._plot_raster_subset(ax, data_masked, dates_to_run['raster'].iloc[0], colorscheme, vmin, vmax)
             title_text = self._build_overlay_title(dates_to_run, 0, dates_to_run['raster'].iloc[0], ax, data_vect_temp, field, ltype, colorSchemePlt)
             ax.set_title(title_text, size=8)
             return ax, fig
